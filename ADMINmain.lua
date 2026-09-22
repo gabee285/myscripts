@@ -1,12 +1,13 @@
 --[[
-    Gabriel's Mystery v4 — ADMIN VERSION
+    Gabriel's Mystery v6 — ADMIN VERSION
     WARNING: Violates Roblox ToS. Educational use only.
 
     - 7 tabs: Combat, Auto, Movement, Fling, Teleport, ESP, KICK
     - Config save/load (auto + manual)
     - Fling player list with refresh
     - Fixed fling: teleports IN FRONT + pushes backward
-    - Gun detection v4: strict Tool-only match
+    - Gun detection: universal GunDrop Part match across ALL maps
+    - HasItem: Tool-only check, ignores GunBelt/GunTipAttachment/etc.
     - Admin does NOT register — cannot be kicked
 ]]
 
@@ -88,16 +89,43 @@ local TRANSPARENCY = {
     TabPillsActive = 0.15,
 }
 
--- ==================== ROLE DETECTION ====================
+-- ==================== ITEM CHECK (TOOL-ONLY) ====================
+-- Only checks equippable Tools in Character + Backpack.
+-- Ignores Attachments, Parts, ObjectValues, Folders — those caused the
+-- "everyone is Sheriff" and "you already have the gun" bugs.
 local function HasItem(player, itemName)
     if not player then return false end
     local char = player.Character
     local bp = player.Backpack
-    if char and char:FindFirstChild(itemName) then return true end
-    if bp and bp:FindFirstChild(itemName) then return true end
-    return false
+    local lower = itemName:lower()
+
+    local function checkContainer(container)
+        if not container then return false end
+        for _, obj in ipairs(container:GetChildren()) do
+            if obj:IsA("Tool") then
+                local n = obj.Name:lower()
+                if n == lower then return true end
+                if lower == "gun" then
+                    if n == "knife" or n == "toys" then
+                        -- skip
+                    elseif n:find("gun", 1, true)
+                        or n == "revolver"
+                        or n == "pistol"
+                        or n == "deagle"
+                        or n == "firearm"
+                        or n == "hallowgun" then
+                        return true
+                    end
+                end
+            end
+        end
+        return false
+    end
+
+    return checkContainer(char) or checkContainer(bp)
 end
 
+-- ==================== ROLE DETECTION ====================
 local SheriffUserId = nil
 local SheriffDead = false
 local LastSheriffCheck = 0
@@ -132,7 +160,7 @@ end
 local function OnSheriffDied(char, hum)
     SheriffDead = true
     Notify("💀 Sheriff died!", Color3.fromRGB(255, 100, 100), 5)
-    if Config.AutoSheriffPickup then
+    if Config and Config.AutoSheriffPickup and TriggerSheriffPickup then
         task.spawn(function()
             task.wait(0.4)
             TriggerSheriffPickup(true)
@@ -713,36 +741,81 @@ local function RunAutoEscape()
     end
 end
 
--- ==================== GUN DETECTION v4 (STRICT TOOL MATCH) ====================
+-- ==================== GUN DETECTION v6 (UNIVERSAL + TOOL-ONLY) ====================
+-- MM2 drops the gun as a BasePart named "GunDrop" inside the current map
+-- model (Workspace.MilBase.GunDrop, Workspace.House.GunDrop, etc.). The
+-- map changes every round — we search Workspace:GetDescendants() so it
+-- works on ANY map with no changes.
+--
+-- HasItem already ignores non-Tool objects, so this file only looks for:
+--   1. BasePart named "GunDrop" (the real dropped gun)
+--   2. A Tool whose name contains "gun" (fallback, live players only)
+
 local pickupInProgress = false
 local lastPickupTime = 0
 
-local function IsRealGun(obj)
-    if not obj or not obj:IsA("Tool") then return false end
-    return obj.Name:lower() == "gun"
-end
-
-local function IsHeldByAnyone(tool)
-    if not tool or not tool.Parent then return false end
+local function IsDroppedGunPart(obj)
+    if not obj or not obj:IsA("BasePart") then return false end
+    if obj.Name ~= "GunDrop" then return false end
     for _, p in ipairs(Players:GetPlayers()) do
-        local char = p.Character
-        local bp = p:FindFirstChild("Backpack")
-        if char and tool:IsDescendantOf(char) then return true end
-        if bp and tool:IsDescendantOf(bp) then return true end
+        if p.Character and obj:IsDescendantOf(p.Character) then
+            return false
+        end
     end
-    return false
+    return true
 end
 
+local function IsHeldGunTool(obj)
+    if not obj or not obj:IsA("Tool") then return false end
+    local n = obj.Name:lower()
+    if n == "knife" or n == "toys" then return false end
+    if n:find("display") then return false end
+    if n:find("belt") then return false end
+    if n:find("attachment") then return false end
+    if n:find("fake") then return false end
+    if n:find("ref") then return false end
+    return n:find("gun", 1, true) ~= nil
+        or n == "hallowgun"
+        or n == "revolver"
+        or n == "pistol"
+        or n == "deagle"
+        or n == "firearm"
+end
+
+-- Returns: gunObject, handlePart
 local function FindGroundGun()
+    -- 1) The real dropped gun — BasePart named "GunDrop" anywhere in Workspace.
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if IsRealGun(obj) and not IsHeldByAnyone(obj) then
-            local handle = obj:FindFirstChild("Handle")
-                or obj:FindFirstChildWhichIsA("BasePart")
-            if handle then
-                return obj, handle, nil
+        if IsDroppedGunPart(obj) then
+            return obj, obj, nil
+        end
+    end
+
+    -- 2) Fallback: any loose gun-named Tool not held by a live player
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if IsHeldGunTool(obj) then
+            local holder = nil
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p.Character and obj:IsDescendantOf(p.Character) then
+                    holder = p
+                    break
+                end
+            end
+            local isLiveHeld = false
+            if holder then
+                local hum = holder.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then isLiveHeld = true end
+            end
+            if not isLiveHeld then
+                local handle = obj:FindFirstChild("Handle")
+                    or obj:FindFirstChildWhichIsA("BasePart")
+                if handle then
+                    return obj, handle, nil
+                end
             end
         end
     end
+
     return nil, nil, nil
 end
 
@@ -750,15 +823,17 @@ local function FindGunHolder()
     for _, p in ipairs(Players:GetPlayers()) do
         if p == LocalPlayer then continue end
         local char = p.Character
-        local bp = p:FindFirstChild("Backpack")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
         if char then
             for _, obj in ipairs(char:GetChildren()) do
-                if IsRealGun(obj) then return p, "equipped" end
+                if IsHeldGunTool(obj) then return p, "equipped" end
             end
         end
+        local bp = p:FindFirstChild("Backpack")
         if bp then
             for _, obj in ipairs(bp:GetChildren()) do
-                if IsRealGun(obj) then return p, "backpack" end
+                if IsHeldGunTool(obj) then return p, "backpack" end
             end
         end
     end
@@ -786,26 +861,16 @@ local function AttemptGrab(gun, handle, myHrp)
 
     task.wait(0.08)
 
+    if not HasItem(LocalPlayer, "Gun") then
+        task.wait(0.15)
+    end
+
     if not HasItem(LocalPlayer, "Gun") and gun:IsA("Tool") then
         pcall(function()
             local bp = LocalPlayer:FindFirstChild("Backpack")
             if bp and gun and gun.Parent then gun.Parent = bp end
         end)
     end
-
-    if not HasItem(LocalPlayer, "Gun") then
-        for _ = 1, 3 do
-            if not LocalPlayer.Character then break end
-            local myH2 = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if myH2 and handle and handle.Parent then
-                pcall(function() handle.CFrame = myH2.CFrame end)
-                pcall(function() handle.Position = myH2.Position end)
-            end
-            task.wait(0.05)
-        end
-        if gun:IsA("Tool") and hum then
-            pcall(function() hum:EquipTool(gun) end)
-        end    end
 
     return HasItem(LocalPlayer, "Gun")
 end
@@ -2274,6 +2339,7 @@ end
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(1)
     RefreshSheriffTracking()
+    LastKnifeHolder = nil
     ApplyNoclip()
     RestoreMovement()
 end)
@@ -2287,7 +2353,7 @@ task.spawn(function()
         if sheriff and not HasItem(sheriff, "Gun") and not SheriffDead then
             SheriffDead = true
             Notify("💀 Sheriff died!", Color3.fromRGB(255, 100, 100), 5)
-            if Config.AutoSheriffPickup then
+            if Config and Config.AutoSheriffPickup and TriggerSheriffPickup then
                 task.spawn(function()
                     task.wait(0.5)
                     TriggerSheriffPickup(true)
@@ -2327,5 +2393,5 @@ RunService.RenderStepped:Connect(function()
     UpdateHitboxes()
 end)
 
-Notify("✅ Gabriel's Mystery v4 [ADMIN] loaded!", Color3.fromRGB(90, 220, 160), 4)
-print("[Gabriel's Mystery v4][ADMIN] Loaded")
+Notify("✅ Gabriel's Mystery v6 [ADMIN] loaded!", Color3.fromRGB(90, 220, 160), 4)
+print("[Gabriel's Mystery v6][ADMIN] Loaded")
