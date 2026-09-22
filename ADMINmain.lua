@@ -1,12 +1,12 @@
 --[[
-    Gabriel's Mystery v3 — ADMIN VERSION
+    Gabriel's Mystery v4 — ADMIN VERSION
     WARNING: Violates Roblox ToS. Educational use only.
 
     - 7 tabs: Combat, Auto, Movement, Fling, Teleport, ESP, KICK
     - Config save/load (auto + manual)
     - Fling player list with refresh
     - Fixed fling: teleports IN FRONT + pushes backward
-    - Fixed grab gun: detects dropped gun in ALL parent layouts
+    - Gun detection v4: strict Tool-only match
     - Admin does NOT register — cannot be kicked
 ]]
 
@@ -108,7 +108,9 @@ local function GetPlayerRole(player)
     if not player.Character then return "Unknown" end
     if HasItem(player, "Knife") then return "Murderer" end
     if HasItem(player, "Gun") then
-        if SheriffUserId and player.UserId ~= SheriffUserId and SheriffDead then return "Hero" end
+        if SheriffUserId and player.UserId ~= SheriffUserId and SheriffDead then
+            return "Hero"
+        end
         return "Sheriff"
     end
     return "Innocent"
@@ -253,14 +255,18 @@ end
 local lastSaveTime = 0
 local function SaveConfig(showNotify)
     if not CanSave() then
-        if showNotify then Notify("❌ writefile not supported", Color3.fromRGB(255, 100, 100), 4) end
+        if showNotify then
+            Notify("❌ writefile not supported", Color3.fromRGB(255, 100, 100), 4)
+        end
         return false
     end
     EnsureConfigFolder()
     local ok = pcall(function() writefile(CONFIG_FILE, SerializeConfig()) end)
     if ok then
         lastSaveTime = tick()
-        if showNotify then Notify("💾 Config saved", Color3.fromRGB(90, 220, 160), 2) end
+        if showNotify then
+            Notify("💾 Config saved", Color3.fromRGB(90, 220, 160), 2)
+        end
     elseif showNotify then
         Notify("❌ Save failed", Color3.fromRGB(255, 100, 100), 4)
     end
@@ -269,11 +275,15 @@ end
 
 local function LoadConfig(showNotify)
     if not CanSave() then
-        if showNotify then Notify("❌ readfile not supported", Color3.fromRGB(255, 100, 100), 4) end
+        if showNotify then
+            Notify("❌ readfile not supported", Color3.fromRGB(255, 100, 100), 4)
+        end
         return false
     end
     if not isfile(CONFIG_FILE) then
-        if showNotify then Notify("⚠️ No config found", Color3.fromRGB(255, 180, 90), 3) end
+        if showNotify then
+            Notify("⚠️ No config found", Color3.fromRGB(255, 180, 90), 3)
+        end
         return false
     end
     local ok, contents = pcall(function() return readfile(CONFIG_FILE) end)
@@ -282,11 +292,17 @@ local function LoadConfig(showNotify)
     local decodeOk = pcall(function() decoded = HttpService:JSONDecode(contents) end)
     if not decodeOk then return false end
     ApplyConfig(decoded)
-    if Config.AimbotKey then Config.AimbotKeyName = KEY_TO_NAME[Config.AimbotKey] or "Q" end
-    if Config.GrabGunKey then Config.GrabGunKeyName = KEY_TO_NAME[Config.GrabGunKey] or "Ctrl" end
+    if Config.AimbotKey then
+        Config.AimbotKeyName = KEY_TO_NAME[Config.AimbotKey] or "Q"
+    end
+    if Config.GrabGunKey then
+        Config.GrabGunKeyName = KEY_TO_NAME[Config.GrabGunKey] or "Ctrl"
+    end
     ApplyNoclip()
     ApplyAntiAFK()
-    if showNotify then Notify("📂 Config loaded", Color3.fromRGB(90, 220, 160), 3) end
+    if showNotify then
+        Notify("📂 Config loaded", Color3.fromRGB(90, 220, 160), 3)
+    end
     return true
 end
 
@@ -534,13 +550,17 @@ local function IsValidTarget(player)
     if GetPlayerRole(player) ~= "Murderer" then return false end
     local hrp = player.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
-    if (Camera.CFrame.Position - hrp.Position).Magnitude > Config.AutoShootRange then return false end
+    if (Camera.CFrame.Position - hrp.Position).Magnitude > Config.AutoShootRange then
+        return false
+    end
     if Config.AutoShootWallCheck then
         local params = RaycastParams.new()
         params.FilterType = Enum.RaycastFilterType.Exclude
         params.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
         local hit = Workspace:Raycast(Camera.CFrame.Position, hrp.Position - Camera.CFrame.Position, params)
-        if hit and not hit.Instance:IsDescendantOf(player.Character) then return false end
+        if hit and not hit.Instance:IsDescendantOf(player.Character) then
+            return false
+        end
     end
     return true
 end
@@ -551,7 +571,10 @@ local function GetMurderer()
         if IsValidTarget(p) then
             local hrp = p.Character:FindFirstChild("HumanoidRootPart")
             local d = (Camera.CFrame.Position - hrp.Position).Magnitude
-            if d < closestDist then closestDist = d closest = p end
+            if d < closestDist then
+                closestDist = d
+                closest = p
+            end
         end
     end
     return closest
@@ -583,7 +606,10 @@ local function GetNearestPlayerByRole(role, maxDist)
         local hrp = p.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then continue end
         local d = (myHrp.Position - hrp.Position).Magnitude
-        if d < closestDist then closestDist = d closest = p end
+        if d < closestDist then
+            closestDist = d
+            closest = p
+        end
     end
     return closest, closestDist
 end
@@ -687,16 +713,13 @@ local function RunAutoEscape()
     end
 end
 
--- ==================== GUN DETECTION (FIXED) ====================
+-- ==================== GUN DETECTION v4 (STRICT TOOL MATCH) ====================
 local pickupInProgress = false
 local lastPickupTime = 0
 
-local function IsGunName(name)
-    if not name then return false end
-    local l = name:lower()
-    return l == "gun" or l:find("gun", 1, true) ~= nil
-        or l == "revolver" or l == "pistol" or l == "firearm"
-        or l:find("revolver", 1, true) ~= nil
+local function IsRealGun(obj)
+    if not obj or not obj:IsA("Tool") then return false end
+    return obj.Name:lower() == "gun"
 end
 
 local function IsHeldByAnyone(tool)
@@ -710,34 +733,17 @@ local function IsHeldByAnyone(tool)
     return false
 end
 
--- Returns: gunObject, handlePart
 local function FindGroundGun()
-    -- 1) Workspace direct children
-    for _, obj in ipairs(Workspace:GetChildren()) do
-        if obj:IsA("Tool") and IsGunName(obj.Name) then
-            local handle = obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart")
-            if handle and not IsHeldByAnyone(obj) then return obj, handle end
-        end
-    end
-    -- 2) Deep scan every Tool
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Tool") and IsGunName(obj.Name) then
-            local handle = obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart")
-            if handle and not IsHeldByAnyone(obj) then return obj, handle end
-        end
-    end
-    -- 3) Model/Part fallback (older MM2)
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if (obj:IsA("Model") or obj:IsA("BasePart")) and IsGunName(obj.Name) then
-            local handle
-            if obj:IsA("BasePart") then handle = obj
-            else handle = obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart") end
-            if handle and not IsHeldByAnyone(obj) then
-                local topTool = obj:FindFirstAncestorWhichIsA("Tool")
-                return topTool or obj, handle
+        if IsRealGun(obj) and not IsHeldByAnyone(obj) then
+            local handle = obj:FindFirstChild("Handle")
+                or obj:FindFirstChildWhichIsA("BasePart")
+            if handle then
+                return obj, handle, nil
             end
         end
     end
+    return nil, nil, nil
 end
 
 local function FindGunHolder()
@@ -747,37 +753,46 @@ local function FindGunHolder()
         local bp = p:FindFirstChild("Backpack")
         if char then
             for _, obj in ipairs(char:GetChildren()) do
-                if obj:IsA("Tool") and IsGunName(obj.Name) then return p, "equipped" end
+                if IsRealGun(obj) then return p, "equipped" end
             end
         end
         if bp then
             for _, obj in ipairs(bp:GetChildren()) do
-                if obj:IsA("Tool") and IsGunName(obj.Name) then return p, "backpack" end
+                if IsRealGun(obj) then return p, "backpack" end
             end
         end
     end
+    return nil, nil
 end
 
 local function AttemptGrab(gun, handle, myHrp)
-    if not gun or not handle or not gun.Parent or not handle.Parent then return false end
+    if not gun or not handle or not gun.Parent or not handle.Parent then
+        return false
+    end
     if not myHrp then return false end
-    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+
+    local hum = LocalPlayer.Character
+        and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
 
     if gun:IsA("Tool") and hum then
         pcall(function() hum:EquipTool(gun) end)
     end
+
     pcall(function() handle:SetNetworkOwner(LocalPlayer) end)
     pcall(function() firetouchinterest(myHrp, handle, 0) end)
     pcall(function() firetouchinterest(myHrp, handle, 1) end)
     pcall(function() firetouchinterest(handle, myHrp, 0) end)
     pcall(function() firetouchinterest(handle, myHrp, 1) end)
+
     task.wait(0.08)
+
     if not HasItem(LocalPlayer, "Gun") and gun:IsA("Tool") then
         pcall(function()
             local bp = LocalPlayer:FindFirstChild("Backpack")
             if bp and gun and gun.Parent then gun.Parent = bp end
         end)
     end
+
     if not HasItem(LocalPlayer, "Gun") then
         for _ = 1, 3 do
             if not LocalPlayer.Character then break end
@@ -790,18 +805,22 @@ local function AttemptGrab(gun, handle, myHrp)
         end
         if gun:IsA("Tool") and hum then
             pcall(function() hum:EquipTool(gun) end)
-        end
-    end
+        end    end
+
     return HasItem(LocalPlayer, "Gun")
 end
 
 local function TriggerSheriffPickup(isAuto)
     if pickupInProgress then
-        if not isAuto then Notify("Pickup already in progress", Color3.fromRGB(255, 180, 90)) end
+        if not isAuto then
+            Notify("Pickup already in progress", Color3.fromRGB(255, 180, 90))
+        end
         return
     end
     if HasItem(LocalPlayer, "Gun") then
-        if not isAuto then Notify("You already have the Gun", Color3.fromRGB(255, 180, 90)) end
+        if not isAuto then
+            Notify("You already have the Gun", Color3.fromRGB(255, 180, 90))
+        end
         return
     end
     if tick() - lastPickupTime < 0.5 then return end
@@ -810,27 +829,34 @@ local function TriggerSheriffPickup(isAuto)
     local holder, location = FindGunHolder()
     if holder then
         local label = holder.DisplayName or holder.Name
-        if label ~= holder.Name then label = label .. " (" .. holder.Name .. ")" end
-        Notify("❌ " .. label .. " has the Gun (" .. location .. ")", Color3.fromRGB(255, 100, 100), 5)
+        if label ~= holder.Name then
+            label = label .. " (" .. holder.Name .. ")"
+        end
+        Notify("❌ " .. label .. " has the Gun (" .. location .. ")",
+            Color3.fromRGB(255, 100, 100), 5)
         return
     end
 
     local gun, handle = FindGroundGun()
     if not gun or not handle then
-        Notify("❌ No dropped Gun on the ground", Color3.fromRGB(255, 100, 100), 5)
+        Notify("❌ No dropped Gun on the ground",
+            Color3.fromRGB(255, 100, 100), 5)
         return
     end
 
     local myChar = LocalPlayer.Character
     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myHrp then
-        if not isAuto then Notify("You have no character", Color3.fromRGB(255, 100, 100)) end
+        if not isAuto then
+            Notify("You have no character", Color3.fromRGB(255, 100, 100))
+        end
         return
     end
 
     pickupInProgress = true
     local gunPos = handle.Position
-    Notify("🎯 Snapping to Gun on the ground...", Color3.fromRGB(255, 180, 90), 3)
+    Notify("🎯 Snapping to Gun on the ground...",
+        Color3.fromRGB(255, 180, 90), 3)
 
     task.spawn(function()
         local savedCFrame = myHrp.CFrame
@@ -838,11 +864,16 @@ local function TriggerSheriffPickup(isAuto)
         RunService.Heartbeat:Wait()
         local success = AttemptGrab(gun, handle, myHrp)
         pcall(function()
-            local myH2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local myH2 = LocalPlayer.Character
+                and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
             if myH2 then myH2.CFrame = savedCFrame end
         end)
-        if success then Notify("✅ Got the Gun!", Color3.fromRGB(90, 220, 160))
-        else Notify("❌ Failed to grab Gun", Color3.fromRGB(255, 100, 100), 5) end
+        if success then
+            Notify("✅ Got the Gun!", Color3.fromRGB(90, 220, 160))
+        else
+            Notify("❌ Failed to grab Gun",
+                Color3.fromRGB(255, 100, 100), 5)
+        end
         pickupInProgress = false
     end)
 end
@@ -865,7 +896,8 @@ local function WatchPlayerDeaths(player)
             if Config.KillNotifier then
                 local dn = player.DisplayName or player.Name
                 local label = dn ~= player.Name and (dn .. " (" .. player.Name .. ")") or player.Name
-                Notify("💀 " .. label .. " (" .. role .. ") died", RoleColors[role] or Color3.fromRGB(255, 255, 255), 5)
+                Notify("💀 " .. label .. " (" .. role .. ") died",
+                    RoleColors[role] or Color3.fromRGB(255, 255, 255), 5)
             end
         end)
     end
@@ -933,7 +965,9 @@ local function FlingPlayer(player)
     ActiveFlings[player] = state
     pcall(function() targetHrp:SetNetworkOwner(LocalPlayer) end)
     pcall(function()
-        if sethiddenproperty then sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge) end
+        if sethiddenproperty then
+            sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+        end
     end)
 
     local forceMul = (Config.FlingForce or 6500) / 6500
@@ -971,7 +1005,11 @@ local function FlingPlayer(player)
             local frontPos = targetH.Position + (facingDir * frontDist)
 
             spinAngle = spinAngle + math.random(5000, 12000)
-            local spin = CFrame.Angles(math.rad(spinAngle * 3), math.rad(spinAngle), math.rad(spinAngle * 2))
+            local spin = CFrame.Angles(
+                math.rad(spinAngle * 3),
+                math.rad(spinAngle),
+                math.rad(spinAngle * 2)
+            )
 
             pcall(function()
                 myH.Anchored = true
@@ -1146,7 +1184,9 @@ local function RejoinServer()
     local placeId = game.PlaceId
     local jobId = game.JobId
     if not jobId or jobId == "" then return false, "No JobId" end
-    local ok = pcall(function() TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer) end)
+    local ok = pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
+    end)
     if ok then return true, "Rejoining" end
     return false, "Failed"
 end
@@ -1160,7 +1200,9 @@ function ApplyNoclip()
         local char = LocalPlayer.Character
         if not char then return end
         for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") and part.CanCollide then part.CanCollide = false end
+            if part:IsA("BasePart") and part.CanCollide then
+                part.CanCollide = false
+            end
         end
     end)
 end
@@ -1185,7 +1227,8 @@ local function KickUserByObject(obj)
         local uid = targetPlayer and targetPlayer.UserId or obj._fallbackUserId
         if uid then _G.GM_KICK_REGISTRY[uid] = "kicked by admin" end
     end
-    Notify("🚫 Kick request sent → " .. targetName, Color3.fromRGB(255, 100, 100), 4)
+    Notify("🚫 Kick request sent → " .. targetName,
+        Color3.fromRGB(255, 100, 100), 4)
 end
 
 local function GetUserList()
@@ -1798,32 +1841,59 @@ local AdminScroll    = CreateScrollingTab()
 
 -- ==================== COMBAT TAB ====================
 SectionHeader(CombatScroll, "Aimbot (Camera Lock)")
-ToggleRow(CombatScroll, "Enable Aimbot", Config.AimbotEnabled, function(v) Config.AimbotEnabled = v DebouncedAutoSave() end)
+ToggleRow(CombatScroll, "Enable Aimbot", Config.AimbotEnabled, function(v)
+    Config.AimbotEnabled = v
+    DebouncedAutoSave()
+end)
 AddInfo(CombatScroll, "Camera locks onto Murderer — you still need to click to shoot.")
-ToggleRow(CombatScroll, "Team Check", Config.AutoShootTeamCheck, function(v) Config.AutoShootTeamCheck = v DebouncedAutoSave() end)
-ToggleRow(CombatScroll, "Wall Check", Config.AutoShootWallCheck, function(v) Config.AutoShootWallCheck = v DebouncedAutoSave() end)
-SliderRow(CombatScroll, "Max Range", 50, 1000, Config.AutoShootRange, function(v) Config.AutoShootRange = v DebouncedAutoSave() end)
+ToggleRow(CombatScroll, "Team Check", Config.AutoShootTeamCheck, function(v)
+    Config.AutoShootTeamCheck = v
+    DebouncedAutoSave()
+end)
+ToggleRow(CombatScroll, "Wall Check", Config.AutoShootWallCheck, function(v)
+    Config.AutoShootWallCheck = v
+    DebouncedAutoSave()
+end)
+SliderRow(CombatScroll, "Max Range", 50, 1000, Config.AutoShootRange, function(v)
+    Config.AutoShootRange = v
+    DebouncedAutoSave()
+end)
 
 SectionHeader(CombatScroll, "Murderer Hitbox")
 ToggleRow(CombatScroll, "Enable Hitbox Boost", Config.HitboxEnabled, function(v)
     Config.HitboxEnabled = v
-    if not v then for p in pairs(MurdererHitboxes) do RemoveHitboxFor(p) end end
+    if not v then
+        for p in pairs(MurdererHitboxes) do RemoveHitboxFor(p) end
+    end
     DebouncedAutoSave()
 end)
-SliderRow(CombatScroll, "Hitbox Size", 4, 20, Config.HitboxSize, function(v) Config.HitboxSize = v DebouncedAutoSave() end)
+SliderRow(CombatScroll, "Hitbox Size", 4, 20, Config.HitboxSize, function(v)
+    Config.HitboxSize = v
+    DebouncedAutoSave()
+end)
 
 SectionHeader(CombatScroll, "Auto-Knife")
-ToggleRow(CombatScroll, "Enable Auto-Knife", Config.AutoKnife, function(v) Config.AutoKnife = v DebouncedAutoSave() end)
-SliderRow(CombatScroll, "Stab Range", 3, 20, Config.AutoKnifeRange, function(v) Config.AutoKnifeRange = v DebouncedAutoSave() end)
+ToggleRow(CombatScroll, "Enable Auto-Knife", Config.AutoKnife, function(v)
+    Config.AutoKnife = v
+    DebouncedAutoSave()
+end)
+SliderRow(CombatScroll, "Stab Range", 3, 20, Config.AutoKnifeRange, function(v)
+    Config.AutoKnifeRange = v
+    DebouncedAutoSave()
+end)
 
 SectionHeader(CombatScroll, "Keybinds")
 KeybindRow(CombatScroll, "Aimbot Key", Config.AimbotKeyName, function(key, name)
-    Config.AimbotKey = key; Config.AimbotKeyName = name
-    Notify("Aimbot key: " .. name, Color3.fromRGB(90, 220, 160), 3); SaveConfig(false)
+    Config.AimbotKey = key
+    Config.AimbotKeyName = name
+    Notify("Aimbot key: " .. name, Color3.fromRGB(90, 220, 160), 3)
+    SaveConfig(false)
 end)
 KeybindRow(CombatScroll, "Grab Gun Key", Config.GrabGunKeyName, function(key, name)
-    Config.GrabGunKey = key; Config.GrabGunKeyName = name
-    Notify("Grab Gun key: " .. name, Color3.fromRGB(90, 220, 160), 3); SaveConfig(false)
+    Config.GrabGunKey = key
+    Config.GrabGunKeyName = name
+    Notify("Grab Gun key: " .. name, Color3.fromRGB(90, 220, 160), 3)
+    SaveConfig(false)
 end)
 
 -- ==================== AUTO TAB ====================
@@ -1838,23 +1908,44 @@ end)
 ActionRow(AutoScroll, "🔫 Grab Dropped Gun Now", function() TriggerSheriffPickup() end)
 
 SectionHeader(AutoScroll, "Auto-Escape")
-ToggleRow(AutoScroll, "Enable Auto-Escape", Config.AutoEscape, function(v) Config.AutoEscape = v DebouncedAutoSave() end)
-SliderRow(AutoScroll, "Escape Trigger Distance", 10, 100, Config.AutoEscapeTriggerDist, function(v) Config.AutoEscapeTriggerDist = v DebouncedAutoSave() end)
-SliderRow(AutoScroll, "Return Distance", 50, 500, Config.AutoEscapeReturnDist, function(v) Config.AutoEscapeReturnDist = v DebouncedAutoSave() end)
+ToggleRow(AutoScroll, "Enable Auto-Escape", Config.AutoEscape, function(v)
+    Config.AutoEscape = v
+    DebouncedAutoSave()
+end)
+SliderRow(AutoScroll, "Escape Trigger Distance", 10, 100, Config.AutoEscapeTriggerDist, function(v)
+    Config.AutoEscapeTriggerDist = v
+    DebouncedAutoSave()
+end)
+SliderRow(AutoScroll, "Return Distance", 50, 500, Config.AutoEscapeReturnDist, function(v)
+    Config.AutoEscapeReturnDist = v
+    DebouncedAutoSave()
+end)
 
 SectionHeader(AutoScroll, "Notifications")
-ToggleRow(AutoScroll, "Kill Notifier", Config.KillNotifier, function(v) Config.KillNotifier = v DebouncedAutoSave() end)
-ToggleRow(AutoScroll, "Anti-AFK", Config.AntiAFK, function(v) Config.AntiAFK = v ApplyAntiAFK() DebouncedAutoSave() end)
+ToggleRow(AutoScroll, "Kill Notifier", Config.KillNotifier, function(v)
+    Config.KillNotifier = v
+    DebouncedAutoSave()
+end)
+ToggleRow(AutoScroll, "Anti-AFK", Config.AntiAFK, function(v)
+    Config.AntiAFK = v
+    ApplyAntiAFK()
+    DebouncedAutoSave()
+end)
 
 -- ==================== MOVEMENT TAB ====================
 SectionHeader(MovementScroll, "Movement")
-ToggleRow(MovementScroll, "Noclip", Config.Noclip, function(v) Config.Noclip = v ApplyNoclip() DebouncedAutoSave() end)
+ToggleRow(MovementScroll, "Noclip", Config.Noclip, function(v)
+    Config.Noclip = v
+    ApplyNoclip()
+    DebouncedAutoSave()
+end)
 AddInfo(MovementScroll, "Walk through walls and objects.")
 
 SectionHeader(MovementScroll, "Mobile")
 ToggleRow(MovementScroll, "Show Floating Buttons", Config.MobileButtonsEnabled, function(v)
     SetMobileButtonsVisible(v)
-    Notify(v and "Mobile buttons ON" or "Mobile buttons OFF", Color3.fromRGB(90, 220, 160), 3)
+    Notify(v and "Mobile buttons ON" or "Mobile buttons OFF",
+        Color3.fromRGB(90, 220, 160), 3)
     DebouncedAutoSave()
 end)
 
@@ -1887,7 +1978,10 @@ ActionRow(FlingScroll, "🛑 Stop All Flings", function()
 end)
 
 SectionHeader(FlingScroll, "Fling Force")
-SliderRow(FlingScroll, "Force", 1000, 15000, Config.FlingForce, function(v) Config.FlingForce = v DebouncedAutoSave() end)
+SliderRow(FlingScroll, "Force", 1000, 15000, Config.FlingForce, function(v)
+    Config.FlingForce = v
+    DebouncedAutoSave()
+end)
 AddInfo(FlingScroll, "Higher = more chaos. Default 6500.")
 
 SectionHeader(FlingScroll, "Fling Player From List")
@@ -1939,7 +2033,8 @@ local function BuildPlayerList()
 
         flingBtn.MouseButton1Click:Connect(function()
             local ok, msg = FlingPlayer(p)
-            Notify(msg or "Fling failed", ok and Color3.fromRGB(255, 180, 90) or Color3.fromRGB(255, 100, 100))
+            Notify(msg or "Fling failed",
+                ok and Color3.fromRGB(255, 180, 90) or Color3.fromRGB(255, 100, 100))
         end)
     end
 end
@@ -1964,10 +2059,22 @@ AddInfo(TeleportScroll, "Teleports your character to the lobby or the map spawn.
 
 -- ==================== ESP TAB ====================
 SectionHeader(ESPScroll, "ESP Settings")
-ToggleRow(ESPScroll, "Enable ESP", Config.ESPEnabled, function(v) Config.ESPEnabled = v DebouncedAutoSave() end)
-ToggleRow(ESPScroll, "Show Name", Config.ESPShowName, function(v) Config.ESPShowName = v DebouncedAutoSave() end)
-ToggleRow(ESPScroll, "Show Role", Config.ESPShowRole, function(v) Config.ESPShowRole = v DebouncedAutoSave() end)
-ToggleRow(ESPScroll, "Show Distance", Config.ESPShowDistance, function(v) Config.ESPShowDistance = v DebouncedAutoSave() end)
+ToggleRow(ESPScroll, "Enable ESP", Config.ESPEnabled, function(v)
+    Config.ESPEnabled = v
+    DebouncedAutoSave()
+end)
+ToggleRow(ESPScroll, "Show Name", Config.ESPShowName, function(v)
+    Config.ESPShowName = v
+    DebouncedAutoSave()
+end)
+ToggleRow(ESPScroll, "Show Role", Config.ESPShowRole, function(v)
+    Config.ESPShowRole = v
+    DebouncedAutoSave()
+end)
+ToggleRow(ESPScroll, "Show Distance", Config.ESPShowDistance, function(v)
+    Config.ESPShowDistance = v
+    DebouncedAutoSave()
+end)
 SliderRow(ESPScroll, "Fill Transparency", 0, 100, math.floor(Config.ESPFillTransparency * 100), function(v)
     Config.ESPFillTransparency = v / 100
     DebouncedAutoSave()
@@ -2220,5 +2327,5 @@ RunService.RenderStepped:Connect(function()
     UpdateHitboxes()
 end)
 
-Notify("✅ Gabriel's Mystery v3 [ADMIN] loaded!", Color3.fromRGB(90, 220, 160), 4)
-print("[Gabriel's Mystery v3][ADMIN] Loaded")
+Notify("✅ Gabriel's Mystery v4 [ADMIN] loaded!", Color3.fromRGB(90, 220, 160), 4)
+print("[Gabriel's Mystery v4][ADMIN] Loaded")
