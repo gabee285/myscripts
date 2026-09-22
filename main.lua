@@ -1,13 +1,14 @@
 --[[
-    Gabriel's Mystery v4 — ADMIN VERSION
+    Gabriel's Mystery v6 — USER VERSION
     WARNING: Violates Roblox ToS. Educational use only.
 
-    - 7 tabs: Combat, Auto, Movement, Fling, Teleport, ESP, KICK
+    - 7 tabs: Combat, Auto, Movement, Fling, Teleport, ESP, Server
     - Config save/load (auto + manual)
     - Fling player list with refresh
     - Fixed fling: teleports IN FRONT + pushes backward
-    - Gun detection v4: strict Tool-only match
-    - Admin does NOT register — cannot be kicked
+    - Gun detection: universal GunDrop Part match across ALL maps
+    - HasItem: Tool-only check, ignores GunBelt/GunTipAttachment/etc.
+    - Registers itself so the ADMIN version can kick this client
 ]]
 
 local Players = game:GetService("Players")
@@ -24,7 +25,7 @@ local Camera = Workspace.CurrentCamera
 
 local LocalPlayer = Players.LocalPlayer
 
--- ==================== SHARED KICK REGISTRY ====================
+-- ==================== SELF-REGISTRATION ====================
 local REGISTRY_NAME = "GM_ScriptRegistry"
 local registry = ReplicatedStorage:FindFirstChild(REGISTRY_NAME)
 if not registry then
@@ -37,36 +38,43 @@ if not registry then
     registry = ok and folder or nil
 end
 
-local function RegistryFolder()
-    if registry and registry.Parent then return registry end
-    _G.GM_KICK_REGISTRY = _G.GM_KICK_REGISTRY or {}
-    return nil
+local myEntry
+if registry and registry.Parent then
+    for _, c in ipairs(registry:GetChildren()) do
+        if c:IsA("ObjectValue") and c.Value == LocalPlayer then c:Destroy() end
+    end
+    myEntry = Instance.new("ObjectValue")
+    myEntry.Name = "User_" .. LocalPlayer.UserId
+    myEntry.Value = LocalPlayer
+    myEntry.Parent = registry
 end
 
-local function GetRegisteredUserObjects()
-    local out = {}
-    local f = RegistryFolder()
-    if f then
-        for _, c in ipairs(f:GetChildren()) do
-            if c:IsA("ObjectValue") and c.Value then
-                table.insert(out, c)
-            end
+_G.GM_KICK_REGISTRY = _G.GM_KICK_REGISTRY or {}
+
+task.spawn(function()
+    while true do
+        task.wait(0.4)
+        local shouldKick = false
+        if registry and registry.Parent then
+            local flag = registry:FindFirstChild("KICK_" .. tostring(LocalPlayer.UserId))
+            if flag then shouldKick = true end
+            if myEntry and not myEntry.Parent then shouldKick = true end
+        end
+        if _G.GM_KICK_REGISTRY[LocalPlayer.UserId] then shouldKick = true end
+        if shouldKick then
+            pcall(function() LocalPlayer:Kick("Removed by script admin.") end)
+            break
         end
     end
-    if _G.GM_KICK_REGISTRY then
-        for uid, name in pairs(_G.GM_KICK_REGISTRY) do
-            local plr = Players:GetPlayerByUserId(uid)
-            if plr then
-                table.insert(out, {Name = name, Value = plr, _fallbackUserId = uid})
-            end
-        end
-    end
-    return out
-end
+end)
+
+LocalPlayer.AncestryChanged:Connect(function(_, parent)
+    if not parent and myEntry and myEntry.Parent then myEntry:Destroy() end
+end)
 
 -- ==================== CONFIG FILE ====================
 local CONFIG_FOLDER = "GabrielsMystery"
-local CONFIG_FILE = CONFIG_FOLDER .. "/config_admin.json"
+local CONFIG_FILE = CONFIG_FOLDER .. "/config_user.json"
 
 local function CanSave()
     return type(writefile) == "function"
@@ -88,16 +96,40 @@ local TRANSPARENCY = {
     TabPillsActive = 0.15,
 }
 
--- ==================== ROLE DETECTION ====================
+-- ==================== ITEM CHECK (TOOL-ONLY) ====================
 local function HasItem(player, itemName)
     if not player then return false end
     local char = player.Character
     local bp = player.Backpack
-    if char and char:FindFirstChild(itemName) then return true end
-    if bp and bp:FindFirstChild(itemName) then return true end
-    return false
+    local lower = itemName:lower()
+
+    local function checkContainer(container)
+        if not container then return false end
+        for _, obj in ipairs(container:GetChildren()) do
+            if obj:IsA("Tool") then
+                local n = obj.Name:lower()
+                if n == lower then return true end
+                if lower == "gun" then
+                    if n == "knife" or n == "toys" then
+                        -- skip
+                    elseif n:find("gun", 1, true)
+                        or n == "revolver"
+                        or n == "pistol"
+                        or n == "deagle"
+                        or n == "firearm"
+                        or n == "hallowgun" then
+                        return true
+                    end
+                end
+            end
+        end
+        return false
+    end
+
+    return checkContainer(char) or checkContainer(bp)
 end
 
+-- ==================== ROLE DETECTION ====================
 local SheriffUserId = nil
 local SheriffDead = false
 local LastSheriffCheck = 0
@@ -132,7 +164,7 @@ end
 local function OnSheriffDied(char, hum)
     SheriffDead = true
     Notify("💀 Sheriff died!", Color3.fromRGB(255, 100, 100), 5)
-    if Config.AutoSheriffPickup then
+    if Config and Config.AutoSheriffPickup and TriggerSheriffPickup then
         task.spawn(function()
             task.wait(0.4)
             TriggerSheriffPickup(true)
@@ -713,52 +745,86 @@ local function RunAutoEscape()
     end
 end
 
--- ==================== GUN DETECTION v4 (STRICT TOOL MATCH) ====================
+-- ==================== GUN DETECTION v6 (UNIVERSAL + TOOL-ONLY) ====================
 local pickupInProgress = false
 local lastPickupTime = 0
 
-local function IsRealGun(obj)
-    if not obj or not obj:IsA("Tool") then return false end
-    return obj.Name:lower() == "gun"
+local function IsDroppedGunPart(obj)
+    if not obj or not obj:IsA("BasePart") then return false end
+    if obj.Name ~= "GunDrop" then return false end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character and obj:IsDescendantOf(p.Character) then
+            return false
+        end
+    end
+    return true
 end
 
-local function IsHeldByAnyone(tool)
-    if not tool or not tool.Parent then return false end
-    for _, p in ipairs(Players:GetPlayers()) do
-        local char = p.Character
-        local bp = p:FindFirstChild("Backpack")
-        if char and tool:IsDescendantOf(char) then return true end
-        if bp and tool:IsDescendantOf(bp) then return true end
-    end
-    return false
+local function IsHeldGunTool(obj)
+    if not obj or not obj:IsA("Tool") then return false end
+    local n = obj.Name:lower()
+    if n == "knife" or n == "toys" then return false end
+    if n:find("display") then return false end
+    if n:find("belt") then return false end
+    if n:find("attachment") then return false end
+    if n:find("fake") then return false end
+    if n:find("ref") then return false end
+    return n:find("gun", 1, true) ~= nil
+        or n == "hallowgun"
+        or n == "revolver"
+        or n == "pistol"
+        or n == "deagle"
+        or n == "firearm"
 end
 
 local function FindGroundGun()
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if IsRealGun(obj) and not IsHeldByAnyone(obj) then
-            local handle = obj:FindFirstChild("Handle")
-                or obj:FindFirstChildWhichIsA("BasePart")
-            if handle then
-                return obj, handle, nil
+        if IsDroppedGunPart(obj) then
+            return obj, obj, nil
+        end
+    end
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if IsHeldGunTool(obj) then
+            local holder = nil
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p.Character and obj:IsDescendantOf(p.Character) then
+                    holder = p
+                    break
+                end
+            end
+            local isLiveHeld = false
+            if holder then
+                local hum = holder.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then isLiveHeld = true end
+            end
+            if not isLiveHeld then
+                local handle = obj:FindFirstChild("Handle")
+                    or obj:FindFirstChildWhichIsA("BasePart")
+                if handle then
+                    return obj, handle, nil
+                end
             end
         end
     end
+
     return nil, nil, nil
 end
 
 local function FindGunHolder()
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == LocalPlayer then continue end
+    for _, p in ipairs(Players:GetPlayers()) do        if p == LocalPlayer then continue end
         local char = p.Character
-        local bp = p:FindFirstChild("Backpack")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
         if char then
             for _, obj in ipairs(char:GetChildren()) do
-                if IsRealGun(obj) then return p, "equipped" end
+                if IsHeldGunTool(obj) then return p, "equipped" end
             end
         end
+        local bp = p:FindFirstChild("Backpack")
         if bp then
             for _, obj in ipairs(bp:GetChildren()) do
-                if IsRealGun(obj) then return p, "backpack" end
+                if IsHeldGunTool(obj) then return p, "backpack" end
             end
         end
     end
@@ -786,26 +852,16 @@ local function AttemptGrab(gun, handle, myHrp)
 
     task.wait(0.08)
 
+    if not HasItem(LocalPlayer, "Gun") then
+        task.wait(0.15)
+    end
+
     if not HasItem(LocalPlayer, "Gun") and gun:IsA("Tool") then
         pcall(function()
             local bp = LocalPlayer:FindFirstChild("Backpack")
             if bp and gun and gun.Parent then gun.Parent = bp end
         end)
     end
-
-    if not HasItem(LocalPlayer, "Gun") then
-        for _ = 1, 3 do
-            if not LocalPlayer.Character then break end
-            local myH2 = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if myH2 and handle and handle.Parent then
-                pcall(function() handle.CFrame = myH2.CFrame end)
-                pcall(function() handle.Position = myH2.Position end)
-            end
-            task.wait(0.05)
-        end
-        if gun:IsA("Tool") and hum then
-            pcall(function() hum:EquipTool(gun) end)
-        end    end
 
     return HasItem(LocalPlayer, "Gun")
 end
@@ -1207,48 +1263,20 @@ function ApplyNoclip()
     end)
 end
 
--- ==================== KICK FUNCTIONS ====================
-local function KickUserByObject(obj)
-    if not obj then return end
-    local targetPlayer = obj.Value
-    local targetName = (targetPlayer and targetPlayer.Name) or obj.Name
-    local f = RegistryFolder()
-    if f then
-        local uid = targetPlayer and targetPlayer.UserId or obj._fallbackUserId or 0
-        local flagName = "KICK_" .. tostring(uid)
-        local existing = f:FindFirstChild(flagName)
-        if existing then existing:Destroy() end
-        local kickFlag = Instance.new("StringValue")
-        kickFlag.Name = flagName
-        kickFlag.Value = "kicked by admin"
-        kickFlag.Parent = f
-    end
-    if _G.GM_KICK_REGISTRY then
-        local uid = targetPlayer and targetPlayer.UserId or obj._fallbackUserId
-        if uid then _G.GM_KICK_REGISTRY[uid] = "kicked by admin" end
-    end
-    Notify("🚫 Kick request sent → " .. targetName,
-        Color3.fromRGB(255, 100, 100), 4)
-end
-
-local function GetUserList()
-    return GetRegisteredUserObjects()
-end
-
 -- ==================== SCREEN GUI ====================
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "GabrielsMystery_Admin"
+ScreenGui.Name = "GabrielsMystery"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.Parent = CoreGui
 
 local MinPill = Instance.new("TextButton")
-MinPill.Size = UDim2.new(0, 200, 0, 44)
-MinPill.Position = UDim2.new(0.5, -100, 0, -60)
+MinPill.Size = UDim2.new(0, 180, 0, 44)
+MinPill.Position = UDim2.new(0.5, -90, 0, -60)
 MinPill.BackgroundColor3 = Color3.fromRGB(28, 24, 36)
 MinPill.BackgroundTransparency = TRANSPARENCY.MainWindow
-MinPill.Text = "🔍  Gabriel's Mystery [ADMIN]"
+MinPill.Text = "🔍  Gabriel's Mystery"
 MinPill.TextColor3 = Color3.fromRGB(245, 240, 255)
 MinPill.TextSize = 14
 MinPill.Font = Enum.Font.GothamBold
@@ -1295,13 +1323,13 @@ local function MinimizeUI()
     })
     shrink:Play()
     shrink.Completed:Connect(function() Main.Visible = false end)
-    MinPill.Position = UDim2.new(0.5, -100, 0, -60)
+    MinPill.Position = UDim2.new(0.5, -90, 0, -60)
     MinPill.BackgroundTransparency = 1
     MinPill.TextTransparency = 1
     MinPill.Visible = true
     task.wait(0.05)
     TweenService:Create(MinPill, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-        Position = UDim2.new(0.5, -100, 0, 16),
+        Position = UDim2.new(0.5, -90, 0, 16),
         BackgroundTransparency = TRANSPARENCY.MainWindow,
         TextTransparency = 0
     }):Play()
@@ -1311,7 +1339,7 @@ local function RestoreUI()
     if not isMinimized then return end
     isMinimized = false
     local pillOut = TweenService:Create(MinPill, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
-        Position = UDim2.new(0.5, -100, 0, -60),
+        Position = UDim2.new(0.5, -90, 0, -60),
         BackgroundTransparency = 1, TextTransparency = 1
     })
     pillOut:Play()
@@ -1388,12 +1416,12 @@ Header.BackgroundTransparency = 1
 Header.Parent = Main
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(0, 340, 0, 40)
+Title.Size = UDim2.new(0, 300, 0, 40)
 Title.Position = UDim2.new(0, 28, 0, 22)
 Title.BackgroundTransparency = 1
-Title.Text = "Gabriel's Mystery  [ADMIN]"
+Title.Text = "Gabriel's Mystery"
 Title.TextColor3 = Color3.fromRGB(245, 240, 255)
-Title.TextSize = 22
+Title.TextSize = 26
 Title.Font = Enum.Font.GothamBold
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = Header
@@ -1837,7 +1865,7 @@ local MovementScroll = CreateScrollingTab()
 local FlingScroll    = CreateScrollingTab()
 local TeleportScroll = CreateScrollingTab()
 local ESPScroll      = CreateScrollingTab()
-local AdminScroll    = CreateScrollingTab()
+local ServerScroll   = CreateScrollingTab()
 
 -- ==================== COMBAT TAB ====================
 SectionHeader(CombatScroll, "Aimbot (Camera Lock)")
@@ -2080,94 +2108,58 @@ SliderRow(ESPScroll, "Fill Transparency", 0, 100, math.floor(Config.ESPFillTrans
     DebouncedAutoSave()
 end)
 
--- ==================== ADMIN TAB ====================
-local function BuildAdminTab()
-    for _, c in ipairs(AdminScroll:GetChildren()) do
-        if c:IsA("GuiObject") and not c:IsA("UIListLayout") and not c:IsA("UIPadding") then
-            c:Destroy()
-        end
-    end
+-- ==================== SERVER TAB ====================
+SectionHeader(ServerScroll, "Server")
+ActionRow(ServerScroll, "🔄 Rejoin Same Server", function()
+    local ok, msg = RejoinServer()
+    Notify(msg or "Failed", ok and Color3.fromRGB(90, 220, 160) or Color3.fromRGB(255, 100, 100))
+end)
+ActionRow(ServerScroll, "🔄 Reset Role Cache", function()
+    RefreshSheriffTracking()
+    LastKnifeHolder = nil
+    Notify("Role cache reset", Color3.fromRGB(180, 140, 255))
+end)
 
-    SectionHeader(AdminScroll, "Config Save / Load")
-    ActionRow(AdminScroll, "💾 Save Config Now", function() SaveConfig(true) end)
-    ActionRow(AdminScroll, "📂 Load Config", function() LoadConfig(true) end)
-
-    SectionHeader(AdminScroll, "Server")
-    ActionRow(AdminScroll, "🔄 Rejoin Same Server", function()
-        local ok, msg = RejoinServer()
-        Notify(msg or "Failed", ok and Color3.fromRGB(90, 220, 160) or Color3.fromRGB(255, 100, 100))
-    end)
-    ActionRow(AdminScroll, "🔄 Reset Role Cache", function()
-        RefreshSheriffTracking()
-        LastKnifeHolder = nil
-        Notify("Role cache reset", Color3.fromRGB(180, 140, 255))
-    end)
-
-    SectionHeader(AdminScroll, "Script Users (Kick)")
-    AddInfo(AdminScroll, "Lists everyone running the USER version. KICK sends a request that their client acts on.")
-
-    local users = GetUserList()
-    if #users == 0 then
-        local empty = Instance.new("TextLabel")
-        empty.Size = UDim2.new(1, 0, 0, 40)
-        empty.BackgroundColor3 = Color3.fromRGB(40, 34, 50)
-        empty.BackgroundTransparency = TRANSPARENCY.Rows
-        empty.Text = "No users running the USER version."
-        empty.TextColor3 = Color3.fromRGB(180, 170, 200)
-        empty.TextSize = 12
-        empty.Font = Enum.Font.Gotham
-        empty.Parent = AdminScroll
-        Instance.new("UICorner", empty).CornerRadius = UDim.new(0, 12)
-    end
-
-    for _, obj in ipairs(users) do
-        local target = obj.Value
-        local row = Instance.new("Frame")
-        row.Size = UDim2.new(1, 0, 0, 48)
-        row.BackgroundColor3 = Color3.fromRGB(40, 34, 50)
-        row.BackgroundTransparency = TRANSPARENCY.Rows
-        row.Parent = AdminScroll
-        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 12)
-
-        local nameLbl = Instance.new("TextLabel")
-        nameLbl.Size = UDim2.new(0.6, 0, 1, 0)
-        nameLbl.Position = UDim2.new(0, 16, 0, 0)
-        nameLbl.BackgroundTransparency = 1
-        nameLbl.Text = target and (target.DisplayName .. " (@" .. target.Name .. ")") or (obj.Name or "?")
-        nameLbl.TextColor3 = Color3.fromRGB(245, 240, 255)
-        nameLbl.TextSize = 13
-        nameLbl.Font = Enum.Font.Gotham
-        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
-        nameLbl.Parent = row
-
-        local kickBtn = Instance.new("TextButton")
-        kickBtn.Size = UDim2.new(0, 80, 0, 30)
-        kickBtn.Position = UDim2.new(1, -96, 0.5, -15)
-        kickBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-        kickBtn.Text = "KICK"
-        kickBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        kickBtn.TextSize = 12
-        kickBtn.Font = Enum.Font.GothamBold
-        kickBtn.Parent = row
-        Instance.new("UICorner", kickBtn).CornerRadius = UDim.new(0, 8)
-
-        kickBtn.MouseButton1Click:Connect(function()
-            KickUserByObject(obj)
-            task.wait(0.2)
-            BuildAdminTab()
-        end)
-    end
-
-    ActionRow(AdminScroll, "🔄 Refresh User List", function()
-        BuildAdminTab()
-        Notify("Refreshed user list", Color3.fromRGB(90, 220, 160), 2)
-    end)
-end
+SectionHeader(ServerScroll, "Config Save / Load")
+AddInfo(ServerScroll, "Settings auto-save on every change. Manual controls below.")
+ActionRow(ServerScroll, "💾 Save Config Now", function() SaveConfig(true) end)
+ActionRow(ServerScroll, "📂 Load Config", function() LoadConfig(true) end)
+ActionRow(ServerScroll, "🗑 Reset to Defaults", function()
+    Config.AimbotEnabled = false
+    Config.AutoShootTeamCheck = true
+    Config.AutoShootRange = 500
+    Config.AutoShootWallCheck = false
+    Config.HitboxEnabled = true
+    Config.HitboxSize = 8
+    Config.AutoKnife = false
+    Config.AutoKnifeRange = 8
+    Config.AutoEscape = false
+    Config.AutoEscapeTriggerDist = 30
+    Config.AutoEscapeReturnDist = 150
+    Config.KillNotifier = true
+    Config.AntiAFK = true
+    Config.AutoSheriffPickup = false
+    Config.Noclip = false
+    Config.ESPEnabled = true
+    Config.ESPShowName = true
+    Config.ESPShowRole = true
+    Config.ESPShowDistance = true
+    Config.ESPFillTransparency = 0.65
+    Config.AimbotKey = Enum.KeyCode.Q
+    Config.AimbotKeyName = "Q"
+    Config.GrabGunKey = Enum.KeyCode.LeftControl
+    Config.GrabGunKeyName = "Ctrl"
+    Config.FlingForce = 6500
+    ApplyNoclip()
+    ApplyAntiAFK()
+    Notify("⚙️ Settings reset — reopen tabs to see changes", Color3.fromRGB(255, 180, 90), 5)
+    SaveConfig(false)
+end)
 
 -- Tab switching
 local allTabs = {
     Combat = CombatScroll, Auto = AutoScroll, Movement = MovementScroll,
-    Fling = FlingScroll, Teleport = TeleportScroll, ESP = ESPScroll, Admin = AdminScroll,
+    Fling = FlingScroll, Teleport = TeleportScroll, ESP = ESPScroll, Server = ServerScroll,
 }
 local tabButtonMap = {}
 tabButtonMap.Combat   = MakeTabButton("Combat",   "⚔", "Combat",   95, 1)
@@ -2176,7 +2168,7 @@ tabButtonMap.Movement = MakeTabButton("Movement", "🏃", "Move",     80, 3)
 tabButtonMap.Fling    = MakeTabButton("Fling",    "💥", "Fling",    75, 4)
 tabButtonMap.Teleport = MakeTabButton("Teleport", "🌀", "TP",       65, 5)
 tabButtonMap.ESP      = MakeTabButton("ESP",      "👁", "ESP",      65, 6)
-tabButtonMap.Admin    = MakeTabButton("Admin",    "🛡", "Admin",    85, 7)
+tabButtonMap.Server   = MakeTabButton("Server",   "🖥", "Server",   80, 7)
 
 local currentTab = nil
 local switching = false
@@ -2186,7 +2178,6 @@ local function AnimateTabSwitch(newTabName)
     switching = true
     local newTab = allTabs[newTabName]
     if not newTab then switching = false return end
-    if newTabName == "Admin" then BuildAdminTab() end
     if currentTab and allTabs[currentTab] then
         local out = TweenService:Create(ContentSlide, TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
             Position = UDim2.new(-0.15, 0, 0, 0)
@@ -2274,6 +2265,7 @@ end
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(1)
     RefreshSheriffTracking()
+    LastKnifeHolder = nil
     ApplyNoclip()
     RestoreMovement()
 end)
@@ -2287,7 +2279,7 @@ task.spawn(function()
         if sheriff and not HasItem(sheriff, "Gun") and not SheriffDead then
             SheriffDead = true
             Notify("💀 Sheriff died!", Color3.fromRGB(255, 100, 100), 5)
-            if Config.AutoSheriffPickup then
+            if Config and Config.AutoSheriffPickup and TriggerSheriffPickup then
                 task.spawn(function()
                     task.wait(0.5)
                     TriggerSheriffPickup(true)
@@ -2327,5 +2319,5 @@ RunService.RenderStepped:Connect(function()
     UpdateHitboxes()
 end)
 
-Notify("✅ Gabriel's Mystery v4 [ADMIN] loaded!", Color3.fromRGB(90, 220, 160), 4)
-print("[Gabriel's Mystery v4][ADMIN] Loaded")
+Notify("✅ Gabriel's Mystery v6 loaded!", Color3.fromRGB(90, 220, 160), 4)
+print("[Gabriel's Mystery v6] Loaded")
