@@ -1,11 +1,16 @@
 --[[
-    Gabriel's Mystery — MM2 Utility
+    Gabriel's Mystery — USER VERSION
+    WARNING: Violates Roblox ToS. Educational use only.
+
     - 3 tabs: Combat, QoL, ESP
     - Platform chooser inside main UI
     - Mobile floating buttons toggle
     - Auto-Sheriff Pickup (only when gun is actually on the ground)
     - Aimbot = CAMERA LOCK ONLY (no auto-fire)
     - Grab Gun: ONLY works if gun is dropped on ground (nobody holds it)
+
+    This version registers itself so an ADMIN running the ADMIN version
+    can kick you. No kick panel here.
 ]]
 
 local Players = game:GetService("Players")
@@ -13,12 +18,71 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local TeleportService = game:GetService("TeleportService")
 local Camera = Workspace.CurrentCamera
 
 local LocalPlayer = Players.LocalPlayer
+
+-- ==================== SELF-REGISTRATION ====================
+-- Register in the shared folder so the ADMIN version can list & kick us.
+local REGISTRY_NAME = "GM_ScriptRegistry"
+local registry = ReplicatedStorage:FindFirstChild(REGISTRY_NAME)
+if not registry then
+    local ok, folder = pcall(function()
+        local f = Instance.new("Folder")
+        f.Name = REGISTRY_NAME
+        f.Parent = ReplicatedStorage
+        return f
+    end)
+    registry = ok and folder or nil
+end
+
+local myEntry
+if registry and registry.Parent then
+    -- Clean stale entries
+    for _, c in ipairs(registry:GetChildren()) do
+        if c:IsA("ObjectValue") and c.Value == LocalPlayer then c:Destroy() end
+    end
+    myEntry = Instance.new("ObjectValue")
+    myEntry.Name = "User_" .. LocalPlayer.UserId
+    myEntry.Value = LocalPlayer
+    myEntry.Parent = registry
+end
+
+-- _G fallback (same-executor multi-instance)
+_G.GM_KICK_REGISTRY = _G.GM_KICK_REGISTRY or {}
+
+-- Watcher: if ADMIN writes KICK_<uid> or removes our entry, kick ourselves.
+task.spawn(function()
+    while true do
+        task.wait(0.4)
+        local shouldKick = false
+        -- Check for explicit kick flag in registry
+        if registry and registry.Parent then
+            local flag = registry:FindFirstChild("KICK_" .. tostring(LocalPlayer.UserId))
+            if flag then shouldKick = true end
+            if myEntry and not myEntry.Parent then shouldKick = true end
+        end
+        -- Check _G fallback
+        if _G.GM_KICK_REGISTRY[LocalPlayer.UserId] then shouldKick = true end
+        if shouldKick then
+            pcall(function()
+                LocalPlayer:Kick("Removed by script admin.")
+            end)
+            break
+        end
+    end
+end)
+
+-- Cleanup on leave
+LocalPlayer.AncestryChanged:Connect(function(_, parent)
+    if not parent then
+        if myEntry and myEntry.Parent then myEntry:Destroy() end
+    end
+end)
 
 -- ==================== TRANSPARENCY ====================
 local TRANSPARENCY = {
@@ -44,17 +108,14 @@ local SheriffUserId = nil
 local SheriffDead = false
 local SheriffDeathLocation = nil
 local SheriffDeathTime = 0
-local DEATH_MEMORY_SECONDS = 60
 local LastSheriffCheck = 0
 local ROLE_POLL_INTERVAL = 0.5
 
 local function GetPlayerRole(player)
     if not player or player == LocalPlayer then return "Local" end
     if not player.Character then return "Unknown" end
-    local hasKnife = HasItem(player, "Knife")
-    local hasGun = HasItem(player, "Gun")
-    if hasKnife then return "Murderer"
-    elseif hasGun then
+    if HasItem(player, "Knife") then return "Murderer" end
+    if HasItem(player, "Gun") then
         if SheriffUserId and player.UserId ~= SheriffUserId and SheriffDead then return "Hero" end
         return "Sheriff"
     end
@@ -82,7 +143,6 @@ local function OnSheriffDied(char, hum)
         SheriffDeathTime = tick()
     end
     Notify("💀 Sheriff died!", Color3.fromRGB(255, 100, 100), 5)
-    -- Wait a bit for the gun to actually drop, then auto-grab if enabled
     if Config.AutoSheriffPickup then
         task.spawn(function()
             task.wait(0.4)
@@ -133,12 +193,10 @@ local Config = {
     ESPShowDistance = true,
     ESPFillTransparency = 0.65,
     Noclip = false,
-    
     AimbotKey = Enum.KeyCode.Q,
     GrabGunKey = Enum.KeyCode.LeftControl,
     AimbotKeyName = "Q",
     GrabGunKeyName = "Ctrl",
-    
     MobileButtonsEnabled = false,
     AutoSheriffPickup = false,
 }
@@ -248,13 +306,6 @@ function Notify(text, color, duration)
     pad.PaddingRight = UDim.new(0, 14)
     pad.Parent = card
 
-    local shadow = label:Clone()
-    shadow.TextColor3 = Color3.fromRGB(0, 0, 0)
-    shadow.TextTransparency = 0.6
-    shadow.Position = UDim2.new(0, 1, 0, 1)
-    shadow.ZIndex = label.ZIndex - 1
-    shadow.Parent = card
-
     card.Position = UDim2.new(-0.3, 0, 0, 0)
     TweenService:Create(card, TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
         Position = UDim2.new(0, 0, 0, 0)
@@ -267,7 +318,6 @@ function Notify(text, color, duration)
         TweenService:Create(cardStroke, fadeInfo, {Transparency = 1}):Play()
         TweenService:Create(accent, fadeInfo, {Transparency = 1}):Play()
         TweenService:Create(label, fadeInfo, {TextTransparency = 1}):Play()
-        TweenService:Create(shadow, fadeInfo, {TextTransparency = 1}):Play()
         task.wait(0.4)
         card:Destroy()
     end)
@@ -613,44 +663,31 @@ local pickupInProgress = false
 local pickupCooldown = 0.5
 local lastPickupTime = 0
 
--- Returns: gun, handle, holderPlayer (nil if on the ground)
--- Only returns a gun if it's on the ground / not in a player's inventory.
 local function FindGroundGun()
-    -- 1) Workspace direct children
     for _, obj in ipairs(Workspace:GetChildren()) do
         if obj:IsA("Tool") and (obj.Name == "Gun" or obj.Name:lower():find("gun", 1, true)) then
             local handle = obj:FindFirstChild("Handle")
-            if handle then
-                return obj, handle, nil  -- on the ground
-            end
+            if handle then return obj, handle, nil end
         end
     end
-
-    -- 2) Deep scan Workspace but SKIP anything inside a character (held)
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Tool") and (obj.Name == "Gun" or obj.Name:lower():find("gun", 1, true)) then
             local handle = obj:FindFirstChild("Handle")
             if handle then
                 local ancestor = obj:FindFirstAncestorOfClass("Model")
                 local isHeld = ancestor and ancestor:FindFirstChildOfClass("Humanoid")
-                if not isHeld then
-                    return obj, handle, nil
-                end
+                if not isHeld then return obj, handle, nil end
             end
         end
     end
-
     return nil, nil, nil
 end
 
--- Returns who currently holds the gun (if anyone), or nil.
 local function FindGunHolder()
     for _, p in ipairs(Players:GetPlayers()) do
         if p == LocalPlayer then continue end
         local char = p.Character
         local bp = p:FindFirstChild("Backpack")
-
-        -- Check character (equipped)
         if char then
             for _, obj in ipairs(char:GetChildren()) do
                 if obj:IsA("Tool") and (obj.Name == "Gun" or obj.Name:lower():find("gun", 1, true)) then
@@ -658,7 +695,6 @@ local function FindGunHolder()
                 end
             end
         end
-        -- Check backpack (stowed)
         if bp then
             for _, obj in ipairs(bp:GetChildren()) do
                 if obj:IsA("Tool") and (obj.Name == "Gun" or obj.Name:lower():find("gun", 1, true)) then
@@ -700,7 +736,6 @@ local function TriggerSheriffPickup(isAuto)
     if now - lastPickupTime < pickupCooldown then return end
     lastPickupTime = now
 
-    -- First check: does anyone ELSE have the gun?
     local holder, location = FindGunHolder()
     if holder then
         local label = holder.DisplayName or holder.Name
@@ -709,7 +744,6 @@ local function TriggerSheriffPickup(isAuto)
         return
     end
 
-    -- Second check: find the gun on the ground
     local gun, handle = FindGroundGun()
     if not gun or not handle then
         Notify("❌ No dropped Gun on the ground", Color3.fromRGB(255, 100, 100), 5)
@@ -726,26 +760,18 @@ local function TriggerSheriffPickup(isAuto)
     pickupInProgress = true
     local gunPos = handle.Position
     Notify("🎯 Snapping to Gun on the ground...", Color3.fromRGB(255, 180, 90), 3)
-    print("[Grab Gun] Gun at " .. tostring(gunPos) .. " (on the ground)")
 
     task.spawn(function()
         local savedCFrame = myHrp.CFrame
-
-        -- Teleport to the gun's actual position
         pcall(function()
             myHrp.CFrame = CFrame.new(gunPos + Vector3.new(0, 1, 0))
         end)
         RunService.Heartbeat:Wait()
-
-        -- Attempt grab
         local success = AttemptGrab(gun, handle, myHrp)
-
-        -- Return to saved position
         pcall(function()
             local myH2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
             if myH2 then myH2.CFrame = savedCFrame end
         end)
-
         if success then
             Notify("✅ Got the Gun!", Color3.fromRGB(90, 220, 160))
         else
@@ -1209,10 +1235,7 @@ MobileGrabBtn.Draggable = true
 MobileGrabBtn.Parent = MobileButtonsGui
 Instance.new("UICorner", MobileGrabBtn).CornerRadius = UDim.new(1, 0)
 
-MobileGrabBtn.MouseButton1Click:Connect(function()
-    TriggerSheriffPickup()
-end)
-
+MobileGrabBtn.MouseButton1Click:Connect(function() TriggerSheriffPickup() end)
 SetMobileButtonsVisible(false)
 
 -- Header
